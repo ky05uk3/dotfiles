@@ -3,7 +3,7 @@ import = ["themes/iceberg.toml"]
 live_config_reload = true
 
 [terminal]
-shell = { program = "/bin/zsh", args = ["-l", "-i", "-c", "unset HERDR_ENV HERDR_SOCKET_PATH HERDR_WORKSPACE_ID HERDR_TAB_ID HERDR_PANE_ID; exec herdr"] }
+shell = { program = "/bin/zsh", args = ["-l", "-i", "-c", "export PATH=\"$HOME/.local/share/mise/shims:$PATH\"; unset HERDR_ENV HERDR_SOCKET_PATH HERDR_WORKSPACE_ID HERDR_TAB_ID HERDR_PANE_ID; exec herdr"] }
 
 [window]
 decorations = "Buttonless"
