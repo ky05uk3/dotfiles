@@ -154,7 +154,6 @@ config.show_tabs_in_tab_bar = true
 config.hide_tab_bar_if_only_one_tab = true
 config.show_new_tab_button_in_tab_bar = false
 config.show_tab_index_in_tab_bar = false
-config.show_close_tab_button_in_tabs = false
 config.tab_max_width = 28
 
 local function basename(path)
@@ -170,6 +169,10 @@ end)
 
 config.command_palette_rows = 24
 config.enable_scroll_bar = false
+config.font = wezterm.font_with_fallback({
+	"JetBrains Mono",
+	"Hiragino Sans",
+})
 config.font_size = 11.5
 config.inactive_pane_hsb = {
 	hue = 1.0,
