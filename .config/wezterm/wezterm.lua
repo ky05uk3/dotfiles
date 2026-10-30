@@ -1,31 +1,113 @@
 local wezterm = require("wezterm")
 local config = {}
 
-local function prompt_workspace_name(window, pane)
-	window:perform_action(
-		wezterm.action.PromptInputLine({
-			description = "(wezterm) Workspace name:",
-			action = wezterm.action_callback(function(inner_window, inner_pane, line)
-				if not line or line == "" then
-					return
-				end
+-- Project roots to scan for the workspace launcher (leader + Ctrl-w).
+-- Each entry's immediate child directories become selectable projects.
+local PROJECT_ROOTS = {
+	wezterm.home_dir .. "/okyo3",
+	wezterm.home_dir .. "/mynavi/pj",
+}
+-- Standalone project directories (added as-is, not scanned for children).
+local PROJECT_DIRS = {
+	wezterm.home_dir .. "/dotfiles",
+}
 
-				inner_window:perform_action(
-					wezterm.action.SwitchToWorkspace({
-						name = line,
-					}),
-					inner_pane
-				)
-			end),
-		}),
-		pane
-	)
+-- List immediate subdirectories of a path (non-recursive), skipping hidden
+-- and known junk dirs. Returns a list of absolute paths.
+local function list_subdirs(root)
+	local dirs = {}
+	local success, stdout = wezterm.run_child_process({
+		"find", root, "-mindepth", "1", "-maxdepth", "1", "-type", "d",
+	})
+	if not success then
+		return dirs
+	end
+	for line in stdout:gmatch("[^\n]+") do
+		local name = line:match("([^/]+)$") or ""
+		if name ~= "" and name:sub(1, 1) ~= "." and name ~= "trash" and name ~= "tmp" then
+			table.insert(dirs, line)
+		end
+	end
+	return dirs
+end
+
+-- Build the choice list for the workspace launcher: currently open
+-- workspaces first, then discovered project directories.
+local function build_workspace_choices()
+	local choices = {}
+	local seen = {}
+
+	-- Section: open workspaces
+	local active = wezterm.mux.get_active_workspace()
+	for _, name in ipairs(wezterm.mux.get_workspace_names()) do
+		seen[name] = true
+		local marker = (name == active) and "" or ""
+		table.insert(choices, {
+			id = name,
+			label = wezterm.format({
+				{ Foreground = { AnsiColor = "Green" } },
+				{ Text = "  " .. marker .. "  " },
+				{ Foreground = { AnsiColor = "White" } },
+				{ Text = name },
+			}),
+		})
+	end
+
+	-- Section: project directories
+	local projects = {}
+	for _, root in ipairs(PROJECT_ROOTS) do
+		for _, dir in ipairs(list_subdirs(root)) do
+			table.insert(projects, dir)
+		end
+	end
+	for _, dir in ipairs(PROJECT_DIRS) do
+		table.insert(projects, dir)
+	end
+
+	for _, dir in ipairs(projects) do
+		local name = dir:match("([^/]+)$") or dir
+		if not seen[name] then
+			local rel = dir:gsub("^" .. wezterm.home_dir, "~")
+			table.insert(choices, {
+				id = dir,
+				label = wezterm.format({
+					{ Foreground = { AnsiColor = "Blue" } },
+					{ Text = "    " },
+					{ Foreground = { AnsiColor = "White" } },
+					{ Text = name },
+					{ Foreground = { AnsiColor = "Grey" } },
+					{ Text = "  " .. rel },
+				}),
+			})
+		end
+	end
+
+	return choices
+end
+
+-- Switch to (or create) a workspace from a launcher selection.
+-- `id` is either an existing workspace name or an absolute project path.
+local function switch_to_selection(win, pane, id)
+	if not id then
+		return
+	end
+	if id:sub(1, 1) == "/" then
+		-- Project path: workspace name is the basename, cwd is the path.
+		local name = id:match("([^/]+)$") or id
+		win:perform_action(
+			wezterm.action.SwitchToWorkspace({ name = name, spawn = { cwd = id } }),
+			pane
+		)
+	else
+		win:perform_action(wezterm.action.SwitchToWorkspace({ name = id }), pane)
+	end
 end
 
 config.adjust_window_size_when_changing_font_size = false
 config.check_for_updates = false
-config.initial_cols = 155
-config.initial_rows = 45
+config.front_end = "WebGpu"
+config.audible_bell = "Disabled"
+config.scrollback_lines = 10000
 config.hyperlink_rules = {
 	{
 		regex = "\\b\\w+://[\\w.-]+:[0-9]{2,15}\\S*\\b",
@@ -47,13 +129,8 @@ config.hyperlink_rules = {
 		regex = [[\b\w+://(?:[\d]{1,3}\.){3}[\d]{1,3}\S*\b]],
 		format = "$0",
 	},
-	{
-		regex = [[\b[tT](\d+)\b]],
-		format = "https://example.com/tasks/?t=$1",
-	},
 }
 config.mouse_wheel_scrolls_tabs = false
-config.warn_about_missing_glyphs = false
 config.window_close_confirmation = "NeverPrompt"
 config.color_scheme = "iceberg-dark"
 config.use_fancy_tab_bar = false
@@ -105,41 +182,34 @@ config.keys = {
 	{ key = "c", mods = "LEADER|CTRL", action = wezterm.action.ActivateCopyMode },
 	{ key = "v", mods = "LEADER|CTRL", action = wezterm.action.PasteFrom("Clipboard") },
 	{
-		key = "n",
-		mods = "LEADER|CTRL",
-		action = wezterm.action_callback(function(window, pane)
-			prompt_workspace_name(window, pane)
-		end),
-	},
-	{
 		key = "w",
 		mods = "LEADER|CTRL",
 		action = wezterm.action_callback(function(win, pane)
-			local workspaces = {}
-			for i, name in ipairs(wezterm.mux.get_workspace_names()) do
-				table.insert(workspaces, {
-					id = name,
-					label = string.format("%d. %s", i, name),
-				})
-			end
 			win:perform_action(
 				wezterm.action.InputSelector({
 					action = wezterm.action_callback(function(_, _, id, label)
 						if not id and not label then
 							wezterm.log_info("Workspace selection canceled")
 						else
-							win:perform_action(wezterm.action.SwitchToWorkspace({ name = id }), pane)
+							switch_to_selection(win, pane, id)
 						end
 					end),
-					title = "Select workspace",
-					choices = workspaces,
+					title = "  Workspaces & Projects",
+					choices = build_workspace_choices(),
 					fuzzy = true,
+					fuzzy_description = wezterm.format({
+						{ Foreground = { AnsiColor = "Fuchsia" } },
+						{ Text = "  Fuzzy find workspace/project: " },
+					}),
 				}),
 				pane
 			)
 		end),
 	},
 	-- without leader key
+	-- Shift+Enter: send ESC+CR so AI agent CLIs (Claude Code, Codex, Kiro CLI)
+	-- insert a newline instead of submitting the prompt.
+	{ key = "Enter", mods = "SHIFT", action = wezterm.action.SendString("\x1b\r") },
 	{ key = "n", mods = "ALT", action = wezterm.action.ActivateTabRelative(-1) },
 	{ key = "m", mods = "ALT", action = wezterm.action.ActivateTabRelative(1) },
 	{ key = "-", mods = "ALT", action = wezterm.action.DecreaseFontSize },
@@ -170,7 +240,7 @@ end)
 config.command_palette_rows = 24
 config.enable_scroll_bar = false
 config.font = wezterm.font_with_fallback({
-	"JetBrains Mono",
+	"JetBrainsMono Nerd Font Mono",
 	"Hiragino Sans",
 })
 config.font_size = 11.5
@@ -194,5 +264,7 @@ config.window_padding = {
 	top = 23,
 	bottom = 23,
 }
+config.window_background_opacity = 0.95
+config.macos_window_background_blur = 20
 
 return config
