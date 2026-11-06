@@ -14,3 +14,6 @@ automatic_backups/
 
 # codex
 .codex/config.toml
+
+# wezterm (machine-specific project dirs for the workspace launcher)
+**/wezterm/projects.local.lua

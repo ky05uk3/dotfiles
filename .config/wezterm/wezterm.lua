@@ -1,32 +1,85 @@
 local wezterm = require("wezterm")
 local config = {}
 
--- Project roots to scan for the workspace launcher (leader + Ctrl-w).
--- Each entry's immediate child directories become selectable projects.
+-- Roots scanned recursively for git repositories (leader + Ctrl-w).
+-- Every directory containing .git becomes a selectable project.
 local PROJECT_ROOTS = {
-	wezterm.home_dir .. "/okyo3",
-	wezterm.home_dir .. "/mynavi/pj",
+	wezterm.home_dir .. "/dev",
 }
--- Standalone project directories (added as-is, not scanned for children).
+-- Standalone project directories (added as-is, no .git required).
+-- Machine-specific entries belong in projects.local.lua, not here.
 local PROJECT_DIRS = {
 	wezterm.home_dir .. "/dotfiles",
 }
+-- Max depth of the .git entry relative to a root (root/a/b/repo/.git is 4).
+local SCAN_MAX_DEPTH = 5
+-- Path components that exclude a repo from the launcher (hidden dirs too).
+local SKIP_DIRS = { node_modules = true, trash = true, tmp = true }
 
--- List immediate subdirectories of a path (non-recursive), skipping hidden
--- and known junk dirs. Returns a list of absolute paths.
-local function list_subdirs(root)
-	local dirs = {}
+-- Find git repositories under `root`. Descent stops at the first directory
+-- that has .git, so repos nested inside another repo are dropped.
+-- Returns a sorted list of absolute repo paths.
+local function find_repos(root)
 	local success, stdout = wezterm.run_child_process({
-		"find", root, "-mindepth", "1", "-maxdepth", "1", "-type", "d",
+		"find", root, "-maxdepth", tostring(SCAN_MAX_DEPTH),
+		"-name", "node_modules", "-prune", "-o",
+		"-name", ".git", "-print",
 	})
 	if not success then
-		return dirs
+		return {}
 	end
+
+	local repos = {}
 	for line in stdout:gmatch("[^\n]+") do
-		local name = line:match("([^/]+)$") or ""
-		if name ~= "" and name:sub(1, 1) ~= "." and name ~= "trash" and name ~= "tmp" then
-			table.insert(dirs, line)
+		local repo = line:gsub("/%.git$", "")
+		local rel = repo:sub(#root + 2)
+		local skip = rel == ""
+		for part in rel:gmatch("[^/]+") do
+			if part:sub(1, 1) == "." or SKIP_DIRS[part] then
+				skip = true
+				break
+			end
 		end
+		if not skip then
+			table.insert(repos, repo)
+		end
+	end
+
+	-- A parent path always sorts before its children, so one pass is enough
+	-- to drop repos nested under an already-kept repo.
+	table.sort(repos)
+	local result = {}
+	for _, repo in ipairs(repos) do
+		local nested = false
+		for _, kept in ipairs(result) do
+			if repo:sub(1, #kept + 1) == kept .. "/" then
+				nested = true
+				break
+			end
+		end
+		if not nested then
+			table.insert(result, repo)
+		end
+	end
+	return result
+end
+
+-- Machine-specific extra project dirs, kept out of the shared dotfiles.
+-- Optional git-ignored file <config_dir>/projects.local.lua that returns a
+-- list of paths; a leading "~" expands to the home directory. It is read on
+-- every launcher open, so edits apply without reloading the config.
+local function load_local_project_dirs()
+	local path = wezterm.config_dir .. "/projects.local.lua"
+	local fh = io.open(path, "r")
+	if not fh then
+		return {}
+	end
+	fh:close()
+
+	local dirs = {}
+	for _, dir in ipairs(dofile(path) or {}) do
+		dir = dir:gsub("^~", wezterm.home_dir):gsub("/+$", "")
+		table.insert(dirs, dir)
 	end
 	return dirs
 end
@@ -53,15 +106,25 @@ local function build_workspace_choices()
 		})
 	end
 
-	-- Section: project directories
+	-- Section: project directories (deduplicated by path)
 	local projects = {}
-	for _, root in ipairs(PROJECT_ROOTS) do
-		for _, dir in ipairs(list_subdirs(root)) do
+	local listed = {}
+	local function add_project(dir)
+		if not listed[dir] then
+			listed[dir] = true
 			table.insert(projects, dir)
 		end
 	end
+	for _, root in ipairs(PROJECT_ROOTS) do
+		for _, dir in ipairs(find_repos(root)) do
+			add_project(dir)
+		end
+	end
 	for _, dir in ipairs(PROJECT_DIRS) do
-		table.insert(projects, dir)
+		add_project(dir)
+	end
+	for _, dir in ipairs(load_local_project_dirs()) do
+		add_project(dir)
 	end
 
 	for _, dir in ipairs(projects) do
